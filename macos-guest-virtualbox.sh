@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/bin/bash -i
 # Push-button installer of macOS on VirtualBox
 # (c) myspaghetti, licensed under GPL2.0 or higher
 # url: https://github.com/myspaghetti/macos-virtualbox
-# version 0.98.3
+# version 0.99.1.8
 
 #       Dependencies: bash  coreutils  gzip  unzip  wget  xxd  dmg2img
 #  Optional features: tesseract-ocr  tesseract-ocr-eng
@@ -24,32 +24,58 @@ memory_size=4096                 # VM RAM in MB, minimum 2048
 gpu_vram=128                     # VM video RAM in MB, minimum 34, maximum 128
 resolution="1280x800"            # VM display resolution
 
-# The following commented commands, when executed on a genuine Mac,
-# may provide the values for NVRAM and EFI parameters required by iCloud,
-# iMessage, and other connected Apple applications.
+# Values for NVRAM and EFI parameters are required by iCloud, iMessage,
+# and other connected Apple applications, but otherwise not required.
 # Parameters taken from a genuine Mac may result in a "Call customer support"
 # message if they do not match the genuine Mac exactly.
 # Non-genuine yet genuine-like parameters usually work.
 
-#   system_profiler SPHardwareDataType
-DmiSystemFamily="MacBook Pro"        # Model Name
-DmiSystemProduct="MacBookPro11,2"    # Model Identifier
-DmiSystemSerial="NO_DEVICE_SN"       # Serial Number (system)
+# Assigning the following parameters is not required when installing or using macOS.
+
+DmiSystemFamily="MacBook Pro"          # Model Name
+DmiSystemProduct="MacBookPro11,2"      # Model Identifier
+DmiBIOSVersion="string:MBP7.89"        # Boot ROM Version
+DmiSystemSerial="NO_DEVICE_SN"         # Serial Number (system)
 DmiSystemUuid="CAFECAFE-CAFE-CAFE-CAFE-DECAFFDECAFF" # Hardware UUID
-DmiBIOSVersion="string:MBP7.89"      # Boot ROM Version
-DmiOEMVBoxVer="string:1"             # Apple ROM Info - left of the first dot
-DmiOEMVBoxRev="string:.23.45.6"      # Apple ROM Info - first dot and onward
-#   ioreg -l | grep -m 1 board-id
-DmiBoardProduct="Mac-3CBD00234E554E41"
-#   nvram 4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14:MLB
-DmiBoardSerial="NO_LOGIC_BOARD_SN"    # stored in EFI
-MLB="${DmiBoardSerial}"               # stored in NVRAM
-#   nvram 4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14:ROM
-ROM='%aa*%bbg%cc%dd'
-#   ioreg -l -p IODeviceTree | grep \"system-id
-SYSTEM_UUID="aabbccddeeff00112233445566778899"
-#   csrutil status
-SYSTEM_INTEGRITY_PROTECTION='10'  # '10' - enabled, '77' - disabled
+ROM='%aa*%bbg%cc%dd'                   # ROM identifier
+MLB="NO_LOGIC_BOARD_SN"                # MLB SN stored in NVRAM
+DmiBoardSerial="${MLB}"                # MLB SN stored in EFI
+DmiBoardProduct="Mac-3CBD00234E554E41" # Product (board) identifier
+SystemUUID="aabbccddeeff00112233445566778899" # System UUID
+
+# If the script is running on macOS and "get_parameters_from_macOS_host" is
+# set to "yes", the script will attempt to get the host's EFI and NVRAM
+# parameters and override the above EFI and NVRAM parameters.
+
+get_parameters_from_macOS_host="no"
+
+if [[ "$(sw_vers 2>/dev/null)" && "${get_parameters_from_macOS_host}" =~ [Yy] ]]; then
+    # These values are taken from a genuine Mac...
+    hardware_overview="$(system_profiler SPHardwareDataType)"
+    model_name="${hardware_overview##*Model Name: }"; model_name="${model_name%%$'\n'*}"
+    model_identifier="${hardware_overview##*Model Identifier: }"; model_identifier="${model_identifier%%$'\n'*}"
+    boot_rom_ver="${hardware_overview##*Boot ROM Version: }"; boot_rom_ver="${boot_rom_ver%%$'\n'*}"
+    sn_system="${hardware_overview##*Serial Number (system): }"; sn_system="${sn_system%%$'\n'*}"
+    hardware_uuid="${hardware_overview##*Hardware UUID: }"; hardware_uuid="${hardware_uuid%%$'\n'*}"
+    nvram_rom="$(nvram 4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14:ROM)"; nvram_rom="${nvram_rom##*$'\t'}"
+    nvram_mlb="$(nvram 4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14:MLB)"; nvram_mlb="${nvram_mlb##*$'\t'}"
+    ioreg_board_id="$(ioreg -p "IODeviceTree" -r -n / -d 1)"; ioreg_board_id="${ioreg_board_id##*board-id\" = <\"}"; ioreg_board_id="${ioreg_board_id%%\">*}"
+    ioreg_system_id="$(ioreg -p "IODeviceTree" -n platform -r)"; ioreg_system_id="${ioreg_system_id##*system-id\" = <}"; ioreg_system_id="${ioreg_system_id%%>*}"
+
+    # ...and set in VirtualBox EFI and NVRAM...
+    DmiSystemFamily="${model_name}"         # Model Name
+    DmiSystemProduct="${model_identifier}"  # Model Identifier
+    DmiBIOSVersion="string:${boot_rom_ver}" # Boot ROM Version
+    DmiSystemSerial="${sn_system}"          # Serial Number (system)
+    DmiSystemUuid="${hardware_uuid}"        # Hardware UUID
+    ROM="${nvram_rom}"                      # ROM identifier, stored in NVRAM
+    MLB="${nvram_mlb}"                      # MLB SN, stored in NVRAM
+    DmiBoardSerial="${nvram_mlb}"           # MLB SN, stored in EFI
+    DmiBoardProduct="${ioreg_board_id}"     # Product (board) identifier
+    SystemUUID="${ioreg_system_id}"         # System UUID, stored in NVRAM
+fi
+
+system_integrity_protection='10'  # '10' - enabled, '77' - disabled
 
 # Additional configurations may be saved in external files and loaded with the
 # following command prior to executing the script:
@@ -87,7 +113,7 @@ function pad_to_33_chars() {
 # custom settings prompt
 echo -e "\nvm_name=\"${vm_name}\""
 pad_to_33_chars "macOS_release_name=\"${macOS_release_name}\"" "# install \"HighSierra\" \"Mojave\" \"Catalina\""
-pad_to_33_chars "storage_size=${storage_size}"                 "# VM disk image size in MB. minimum 22000"
+pad_to_33_chars "storage_size=${storage_size}"                 "# VM disk image size in MB, minimum 22000"
 pad_to_33_chars "storage_format=\"${storage_format}\""         "# VM disk image file format, \"vdi\" or \"vmdk\""
 pad_to_33_chars "cpu_count=${cpu_count}"                       "# VM CPU cores, minimum 2"
 pad_to_33_chars "memory_size=${memory_size}"                   "# VM RAM in MB, minimum 2048"
@@ -105,7 +131,7 @@ if [[ -n "${BASH_VERSION}" && -n "${ZSH_VERSION}" ]]; then
     echo "The script cannot determine if it is executed on bash or zsh."
     echo "Please explicitly execute the script on the same shell as the interactive shell,"
     echo -e "for example, for zsh:\n"
-    echo "    ${highlight_color}zsh macos-guest-virtualbox.sh${default_color}"
+    echo "    ${highlight_color}zsh -i macos-guest-virtualbox.sh${default_color}"
     exit
 elif [[ -n "${BASH_VERSION}" ]]; then
     if [[ ! ( "${BASH_VERSION:0:1}" -ge 5
@@ -120,7 +146,7 @@ elif [[ -n "${BASH_VERSION}" ]]; then
         exit
     fi
 elif [[ -n "${ZSH_VERSION}" ]]; then
-    if [[ ( "${ZSH_VERSION:0:1}" -ge 6 
+    if [[ ( "${ZSH_VERSION:0:1}" -ge 6
             || "${ZSH_VERSION:0:3}" =~ 5\.[5-9]
             || "${ZSH_VERSION:0:4}" =~ 5\.[1-4][0-9] ) ]]; then
         # make zsh parse the script (almost) like bash
@@ -134,13 +160,22 @@ else
     exit
 fi
 
-if [[ ! -t 1 ]]; then  # terminal is not interactive
+if [[ ! $- =~ i ]]; then  # terminal is not interactive
+    echo "The shell appears to be executed non-interactively. If this is not the case,"
+    echo "please press CTRL-C and run the script under an interactive shell, for example"
+    echo -e "${highlight_color}bash -i macos-guest-virtualbox.sh${default_color}    or    ${highlight_color}zsh -i macos-guest-virtualbox.sh${default_color}\n"
+    echo "Otherwise, the script will continue running non-interactively."
+    animated_please_wait 5
+    echo ""
     tesseract_ocr="$(tesseract --version 2>/dev/null)"
     tesseract_lang="$(tesseract --list-langs 2>/dev/null)"
-    regex_ver='[Tt]esseract 4'  # for zsh quoted regex compatibility
+    regex_ver='[Tt]esseract [45]'  # for zsh quoted regex compatibility
     if [[ ! ( "${tesseract_ocr}" =~ ${regex_ver} ) || -z "${tesseract_lang}" ]]; then
         echo "Running the script on a non-interactive shell requires the following packages:"
-        echo "    tesseract-ocr >= 4    tesseract-ocr-eng"
+        echo -e "    tesseract-ocr >= 4    tesseract-ocr-eng\n"
+        echo "Exiting."
+        animated_please_wait 5
+        echo ""
         exit
     fi
 fi
@@ -169,6 +204,9 @@ if [[ -n "$(gcsplit --help 2>/dev/null)" ]]; then
     }
     function seq() {
         gseq "$@"
+    }
+    function sort() {
+        gsort "$@"
     }
 fi
 }
@@ -206,7 +244,7 @@ if [[ -z "$(gzip --help 2>/dev/null)" ||
 fi
 
 # check that xxd supports endianness -e flag
-if [[ -z "$(echo -n "xxd" | xxd -e -p 2>/dev/null)" ]]; then
+if [[ -z "$(xxd -e -p -l 16 /dev/urandom 2>/dev/null)" ]]; then
     echo "Please make sure a version of xxd which supports the -e option is installed."
     echo -e "The -e option should be listed when executing   ${low_contrast_color}xxd --help${default_color}"
     echo "The package vim-common-8 provides a compatible version on most modern distros."
@@ -224,17 +262,17 @@ fi
 # VirtualBox in ${PATH}
 # Cygwin
 if [[ -n "$(cygcheck -V 2>/dev/null)" ]]; then
-    if [[ -n "$(cmd.exe /d /s /c call VBoxManage.exe -v 2>/dev/null)" ]]; then
+    if [[ -n "$(cmd.exe /d/s/c call VBoxManage.exe -v 2>/dev/null)" ]]; then
         function VBoxManage() {
-            cmd.exe /d /s /c call VBoxManage.exe "$@"
+            cmd.exe /d/s/c call VBoxManage.exe "$@"
         }
     else
         cmd_path_VBoxManage='C:\Program Files\Oracle\VirtualBox\VBoxManage.exe'
         echo "Can't find VBoxManage in PATH variable,"
         echo "checking ${cmd_path_VBoxManage}"
-        if [[ -n "$(cmd.exe /d /s /c call "${cmd_path_VBoxManage}" -v 2>/dev/null)" ]]; then
+        if [[ -n "$(cmd.exe /d/s/c call "${cmd_path_VBoxManage}" -v 2>/dev/null)" ]]; then
             function VBoxManage() {
-                cmd.exe /d /s /c call "${cmd_path_VBoxManage}" "$@"
+                cmd.exe /d/s/c call "${cmd_path_VBoxManage}" "$@"
             }
             echo "Found VBoxManage"
         else
@@ -245,7 +283,23 @@ if [[ -n "$(cygcheck -V 2>/dev/null)" ]]; then
             exit
         fi
     fi
-# Windows Subsystem for Linux (WSL)
+# Windows Subsystem for Linux 2 (WSL2 or WSLg)
+elif [[ "$(cat /proc/sys/kernel/osrelease 2>/dev/null)" =~ WSL[2Gg] ]]; then  # WSL2 or WSLg
+    if [[ -n "$(VBoxManage -v 2>/dev/null)" ]]; then
+        if [[ ! "$(lsmod)" =~ vboxdrv ]]; then  # if the vboxdrv kernel module is not present
+            echo "The script appears to be executed on WSL2 or WSLg."
+            echo "Mind that WSL2 and WSLg require kernel module compilation and"
+            echo "custom configuration that is not supported by the script."
+            echo "If the script does not detect the ${highlight_color}vboxdrv${default_color} kernel module, it exits."
+            exit
+        fi
+    else
+        echo "Please make sure VirtualBox version 5.2 or higher and its kernel module"
+        echo "are installed, and that the path to the VBoxManage executable"
+        echo "is in the PATH variable."
+        exit
+    fi
+# Windows Subsystem for Linux (WSL "1") 
 elif [[ "$(cat /proc/sys/kernel/osrelease 2>/dev/null)" =~ [Mm]icrosoft ]]; then
     if [[ -n "$(VBoxManage.exe -v 2>/dev/null)" ]]; then
         function VBoxManage() {
@@ -270,8 +324,9 @@ elif [[ "$(cat /proc/sys/kernel/osrelease 2>/dev/null)" =~ [Mm]icrosoft ]]; then
     fi
 # everything else (not cygwin and not wsl)
 elif [[ -z "$(VBoxManage -v 2>/dev/null)" ]]; then
-    echo "Please make sure VirtualBox version 5.2 or higher is installed,"
-    echo "and that the path to the VBoxManage executable is in the PATH variable."
+    echo "Please make sure VirtualBox version 5.2 or higher and its kernel module"
+    echo "are installed, and that the path to the VBoxManage executable"
+    echo "is in the PATH variable."
     exit
 fi
 
@@ -308,15 +363,15 @@ else
 fi
 
 # dmg2img
-if [[ -z "$(dmg2img -d 2>/dev/null)" ]]; then
+if ! dmg2img >/dev/null 2>&1; then
     if [[ -z "$(cygcheck -V 2>/dev/null)" ]]; then
-        echo "Please install the package dmg2img."
+        echo -e "\nPlease install the package dmg2img."
         exit
     fi
     if [[ -z "$("${PWD%%/}/dmg2img.exe" -d 2>/dev/null)" ]]; then
         if [[ -z "${PWD}" ]]; then echo "PWD environment variable is not set. Exiting."; exit; fi
         echo "Locally installing dmg2img"
-        wget "http://vu1tur.eu.org/tools/dmg2img-1.6.6-win32.zip" \
+        wget "https://web.archive.org/web/20190322013244/http://vu1tur.eu.org/tools/dmg2img-1.6.6-win32.zip" \
              ${wgetargs} \
              --output-document="dmg2img-1.6.6-win32.zip"
         if [[ ! -s dmg2img-1.6.6-win32.zip ]]; then
@@ -326,6 +381,7 @@ if [[ -z "$(dmg2img -d 2>/dev/null)" ]]; then
         unzip -oj "dmg2img-1.6.6-win32.zip" "dmg2img.exe"
         rm "dmg2img-1.6.6-win32.zip"
         chmod +x "dmg2img.exe"
+        [[ ! -x "dmg2img.exe" ]] && echo "Error setting the executable permission for dmg2img.exe. Exiting." && exit
     fi
     function dmg2img() {
         "${PWD%%/}/dmg2img.exe" "$@"
@@ -565,10 +621,10 @@ ROM_b16="$(for (( i=0; i<${#ROM}; )); do
 generate_nvram_bin_file "ROM" "${ROM_b16}" "4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14"
 
 # system-id
-generate_nvram_bin_file "system-id" "${SYSTEM_UUID}" "7C436110-AB2A-4BBB-A880-FE41995C9F82"
+generate_nvram_bin_file "system-id" "${SystemUUID}" "7C436110-AB2A-4BBB-A880-FE41995C9F82"
 
 # SIP / csr-active-config
-generate_nvram_bin_file "csr-active-config" "${SYSTEM_INTEGRITY_PROTECTION}" "7C436110-AB2A-4BBB-A880-FE41995C9F82"
+generate_nvram_bin_file "csr-active-config" "${system_integrity_protection}" "7C436110-AB2A-4BBB-A880-FE41995C9F82"
 }
 
 function create_macos_installation_files_viso() {
@@ -651,10 +707,20 @@ echo "/ESP/startup.nsh=\"${vm_name}_startup.nsh\"" >> "${macOS_release_name}_ins
 
 function configure_vm() {
 print_dimly "stage: configure_vm"
-VBoxManage modifyvm "${vm_name}" --cpus "${cpu_count}" --memory "${memory_size}" \
- --vram "${gpu_vram}" --pae on --boot1 none --boot2 none --boot3 none \
- --boot4 none --firmware efi --rtcuseutc on --chipset ich9 ${extension_pack_usb3_support} \
- --mouse usbtablet --keyboard usb --audiocontroller hda --audiocodec stac9221
+if [[ -n "$(
+            VBoxManage modifyvm "${vm_name}" --cpus "${cpu_count}" \
+            --memory "${memory_size}" --vram "${gpu_vram}" --pae on \
+            --boot1 none --boot2 none --boot3 none --boot4 none \
+            --firmware efi --rtcuseutc on --chipset ich9 ${extension_pack_usb3_support} \
+            --mouse usbtablet --keyboard usb --audiocontroller hda \
+            --audiocodec stac9221 --audio=none 2>&1 >/dev/null
+           )" ]]; then
+    echo -e "\nError: Could not configure virtual machine \"${vm_name}\"."
+    echo -e "If the VM is powered on, power off the virtual machine and resume the script or"
+    echo -e "execute the stage ${low_contrast_color}configure_vm${default_color}\n"
+    echo "Exiting."
+    exit
+fi
 
 VBoxManage setextradata "${vm_name}" \
  "VBoxInternal2/EfiGraphicsResolution" "${resolution}"
@@ -775,7 +841,7 @@ echo -e "for partitioning and populating the bootable installer virtual disk.\n"
 create_viso_header "${vm_name}_populate_bootable_installer_virtual_disk.viso" "bootinst-sh"
 echo "/bootinst.sh=\"${vm_name}_bootinst.txt\"" >> "${vm_name}_populate_bootable_installer_virtual_disk.viso"
 # Assigning "physical" disks from largest to smallest to "${disks[]}" array
-# Partitining largest disk as APFS
+# Partitioning largest disk as APFS
 # Partition second-largest disk as JHFS+
 echo '# this script is executed on the macOS virtual machine' > "${vm_name}_bootinst.txt"
 echo 'disks="$(diskutil list | grep -o "\*[0-9][^ ]* [GTP]B *disk[0-9]$" | grep -o "[0-9].*")" && \
@@ -823,8 +889,8 @@ The virtual machine may report that disk space is critically low; this is fine.
 When the bootable installer virtual disk is finished being populated, the script
 will shut down the virtual machine. After shutdown, the initial base system will
 be detached from the VM and released from VirtualBox."
-print_dimly "If the partitioning fails, exit the script by pressing CTRL-C
-Otherwise, please wait."
+print_dimly "If the partitioning fails, exit the script by pressing CTRL-C"
+print_dimly "Otherwise, please wait."
 while [[ "$( VBoxManage list runningvms )" =~ \""${vm_name}"\" ]]; do sleep 2 >/dev/null 2>&1; done
 echo "Waiting for the VirtualBox GUI to shut off."
 animated_please_wait 10
@@ -931,7 +997,7 @@ mkdir -p "/Volumes/'"${vm_name}"'/tmp/mount_efi" && \
 mount_msdos /dev/${disks[0]}s1 "/Volumes/'"${vm_name}"'/tmp/mount_efi" && \
 cp -r "/Volumes/'"${macOS_release_name:0:5}-files"'/ESP/"* "/Volumes/'"${vm_name}"'/tmp/mount_efi/" && \
 installer_pid=$(ps | grep startosinstall | grep -v grep | cut -d '"'"' '"'"' -f 3) && \
-kill -SIGUSR1 ${installer_pid}' > "${vm_name}_configure_nvram.txt"
+kill -SIGUSR1 ${installer_pid}' >> "${vm_name}_configure_nvram.txt"
 # Find background process PID, then
 # start the installer, send SIGUSR1 to concurrent bash script,
 # the other script copies files to EFI system partition,
@@ -946,7 +1012,7 @@ disks=(${disks[@]}) && \
 diskutil partitionDisk "/dev/${disks[0]}" 1 GPT APFS "'"${vm_name}"'" R && \
 app_path="$(ls -d /Install*.app)" && \
 cd "/${app_path}/Contents/Resources/" && \
-./startosinstall --agreetolicense --pidtosignal ${background_pid} --rebootdelay 500 --volume "/Volumes/'"${vm_name}"'"' >> "${vm_name}_startosinstall.txt"
+./startosinstall --agreetolicense --pidtosignal ${background_pid} --rebootdelay 90 --volume "/Volumes/'"${vm_name}"'"' >> "${vm_name}_startosinstall.txt"
 if [[ -n $(
            2>&1 VBoxManage storageattach "${vm_name}" --storagectl SATA --port 3 \
                --type dvddrive --medium "${vm_name}_populate_macos_target_disk.viso" >/dev/null
@@ -984,7 +1050,8 @@ fi
 echo -e "\nFor further information, such as applying EFI and NVRAM variables to enable
 iMessage connectivity, see the documentation with the following command:\n"
 would_you_like_to_know_less
-echo -e "\n${highlight_color}That's it! Enjoy your virtual machine.${default_color}\n"
+echo -e "\n${highlight_color}If the Terminal window progress counter reaches 100% and reboots into${default_color}"
+echo -e "${highlight_color}an Apple macOS installer progress bar, that's it! Enjoy your virtual machine.${default_color}\n"
 }
 
 function prompt_delete_temporary_files() {
@@ -1030,9 +1097,20 @@ else
 fi
 }
 
+function and_all_subsequent_stages() {
+    # if exactly two arguments were specified on the command line, and the first is a stage title,
+    # then perform all stages subsequent to the specified stage, otherwise do nothing.
+    [[ ${#specified_arguments[@]} -ne 2 ]] && return
+    for stage in "${stages[@]}"; do
+        [[ "${stages[0]}" = "${specified_arguments[0]}" ]] && break
+        stages=( "${stages[@]:1}" )
+    done
+    for stage in "${stages[@]:1}"; do ${stage}; done
+}
+
 function documentation() {
 low_contrast_stages=""
-for stage in ${stages}; do
+for stage in "${stages[@]}"; do
     low_contrast_stages="${low_contrast_stages}"'    '"${low_contrast_color}${stage}${default_color}"$'\n'
 done
 echo -ne "\n        ${highlight_color}NAME${default_color}
@@ -1052,12 +1130,17 @@ The installation is divided into stages. Stage titles may be given as command-
 line arguments for the script. When the script is executed with no command-line
 arguments, each of the stages is performed in succession in the order listed:
 
+    ${low_contrast_color}check_shell${default_color}
 ${low_contrast_stages}
-Other than the stages above, the command-line arguments \"${low_contrast_color}documentation${default_color}\" and
-\"${low_contrast_color}troubleshoot${default_color}\" are available. \"${low_contrast_color}troubleshoot${default_color}\" outputs system information,
-VirtualBox logs, and checksums for some installation files. \"${low_contrast_color}documentation${default_color}\"
-outputs the script's documentation. If \"${low_contrast_color}documentation${default_color}\" is the first argument,
-no other arguments are parsed.
+Other than the stages above, the command-line arguments \"${low_contrast_color}documentation${default_color}\",
+\"${low_contrast_color}troubleshoot${default_color}\", and \"${low_contrast_color}and_all_subsequent_stages${default_color}\" are available. \"${low_contrast_color}troubleshoot${default_color}\"
+generates a file with system information, VirtualBox logs, and checksums for
+some installation files. \"${low_contrast_color}documentation${default_color}\" outputs the script's documentation.
+If \"${low_contrast_color}documentation${default_color}\" is the first argument, no other arguments are parsed.
+If the first argument is a stage title and the only other argument is
+\"${low_contrast_color}and_all_subsequent_stages${default_color}\", then the speficied stage and all subsequent
+stages are performed in succession in the order listed above;
+otherwise, \"${low_contrast_color}and_all_subsequent_stages${default_color}\" does not perform any stages.
 
 The stage \"${low_contrast_color}check_shell${default_color}\" is always performed when the script loads.
 
@@ -1069,19 +1152,24 @@ specified stages are performed only after the checks pass.
         ${highlight_color}EXAMPLES${default_color}
     ${low_contrast_color}${0} create_vm configure_vm${default_color}
 
-The above stage might be used to create and configure a virtual machine on a
+The above command might be used to create and configure a virtual machine on a
 new VirtualBox installation, then manually attach to the new virtual machine
 an existing macOS disk image that was previously created by the script.
 
     ${low_contrast_color}${0} prompt_delete_temporary_files${default_color}
 
-The above stage might be used when no more virtual machines need to be
+The above command might be used when no more virtual machines need to be
 installed, and the temporary files can be deleted.
+
+    ${low_contrast_color}${0} configure_vm and_all_subsequent_stages${default_color}
+
+The above command might be used to resume the script stages after the stage
+\"${low_contrast_color}configure_vm${default_color}\" failed.
 
     ${low_contrast_color}${0} "'\\'"${default_color}
 ${low_contrast_color}configure_vm create_nvram_files create_macos_installation_files_viso${default_color}
 
-The above stages might be used to update the EFI and NVRAM variables required
+The above command might be used to update the EFI and NVRAM variables required
 for iCloud and iMessage connectivity and other Apple-connected apps.
 
         ${highlight_color}Configuration${default_color}
@@ -1100,30 +1188,27 @@ for example ${low_contrast_color}macOS_release_name=\"HighSierra\"${default_colo
         ${highlight_color}iCloud and iMessage connectivity${default_color}
 iCloud, iMessage, and other connected Apple services require a valid device
 name and serial number, board ID and serial number, and other genuine
-(or genuine-like) Apple parameters. These parameters may be edited at the top
-of the script or loaded through a configuration file as described in the
-section above. Assigning these parameters is not required when installing or
-using macOS, only when connecting to the iCloud app, iMessage, and other
-apps that authenticate the device with Apple.
+(or genuine-like) Apple parameters. Assigning these parameters is ${low_contrast_color}not required${default_color}
+when installing or using macOS, only when connecting to the iCloud app,
+iMessage, and other apps that authenticate the device with Apple.
 
 These are the variables that are usually required for iMessage connectivity:
 
     ${low_contrast_color}DmiSystemFamily    # Model name${default_color}
     ${low_contrast_color}DmiSystemProduct   # Model identifier${default_color}
+    ${low_contrast_color}DmiBIOSVersion     # Boot ROM version${default_color}
     ${low_contrast_color}DmiSystemSerial    # System serial number${default_color}
     ${low_contrast_color}DmiSystemUuid      # Hardware unique identifier${default_color}
-    ${low_contrast_color}DmiOEMVBoxVer      # Apple ROM info (major version)${default_color}
-    ${low_contrast_color}DmiOEMVBoxRev      # Apple ROM info (revision)${default_color}
-    ${low_contrast_color}DmiBIOSVersion     # Boot ROM version${default_color}
-    ${low_contrast_color}DmiBoardProduct    # Main Logic Board identifier${default_color}
-    ${low_contrast_color}DmiBoardSerial     # Main Logic Board serial (stored in EFI)${default_color}
-    ${low_contrast_color}MLB                # Main Logic Board serial (stored in NVRAM)${default_color}
-    ${low_contrast_color}ROM                # ROM identifier (stored in NVRAM)${default_color}
-    ${low_contrast_color}SYSTEM_UUID        # System unique identifier (stored in NVRAM)${default_color}
+    ${low_contrast_color}ROM                # ROM identifier, stored in NVRAM${default_color}
+    ${low_contrast_color}MLB                # Main Logic Board serial, stored in NVRAM${default_color}
+    ${low_contrast_color}DmiBoardSerial     # Main Logic Board serial, stored in EFI${default_color}
+    ${low_contrast_color}DmiBoardProduct    # Product (board) identifier${default_color}
+    ${low_contrast_color}SystemUUID         # System unique identifier, stored in NVRAM${default_color}
 
-The comments at the top of the script specify how to view these variables
-on a genuine Mac. Some new Macs do not output the Apple ROM info which suggests
-the parameter is not always required.
+These parameters may be manually set in the ${low_contrast_color}set_variables()${default_color} function when the
+\"${low_contrast_color}get_parameters_from_macOS_host${default_color}\" is set to \"${low_contrast_color}no${default_color}\", which is the default setting. When
+the script is executed on macOS and the variable \"${low_contrast_color}get_parameters_from_macOS_host${default_color}\" is
+set to \"${low_contrast_color}yes${default_color}\", the script copies the parameters from the host.
 
         ${highlight_color}Applying the EFI and NVRAM parameters${default_color}
 The EFI and NVRAM parameters may be set in the script before installation by
@@ -1192,7 +1277,7 @@ this script. Some features may behave unexpectedly, such as USB device support,
 audio support, FileVault boot password prompt support, and other features.
 
         ${highlight_color}CPU profiles and CPUID settings${default_color} (unsupported)
-macOS does not supprort every CPU supported by VirtualBox. If the macOS Base
+macOS does not support every CPU supported by VirtualBox. If the macOS Base
 System does not boot, try applying different CPU profiles to the virtual
 machine with the ${low_contrast_color}VBoxManage${default_color} commands described below. First, while the
 VM is powered off, set the guest's CPU profile to the host's CPU profile, then
@@ -1279,7 +1364,7 @@ for wrapper in 1; do
     echo "VBOX_VERSION ${vbox_ver//[$'\r\n']/}"
     macos_ver="$(sw_vers 2>/dev/null)"
     wsl_ver="$(cat /proc/sys/kernel/osrelease 2>/dev/null)"
-    win_ver="$(cmd.exe /d /s /c call ver 2>/dev/null)"
+    win_ver="$(cmd.exe /d/s/c call ver 2>/dev/null)"
     echo "OS VERSION ${macos_ver}${wsl_ver}${win_ver//[$'\r\n']/}"
     echo "################################################################################"
     echo "vbox.log"
@@ -1482,7 +1567,7 @@ function declare_scancode_dict() {
 
 function clear_input_buffer_then_read() {
     while read -d '' -r -t 0; do read -d '' -t 0.1 -n 10000; break; done
-    [[ -t 1 ]] && read
+    [[ $- =~ i ]] && read || echo ""
 }
 
 # read variable kbstring and convert string to scancodes and send to guest vm
@@ -1513,25 +1598,25 @@ function send_enter() {
 function prompt_lang_utils_terminal() {
     tesseract_ocr="$(tesseract --version 2>/dev/null)"
     tesseract_lang="$(tesseract --list-langs 2>/dev/null)"
-    regex_ver='[Tt]esseract 4'  # for zsh quoted regex compatibility
+    regex_ver='[Tt]esseract [45]'  # for zsh quoted regex compatibility
     if [[ "${tesseract_ocr}" =~ ${regex_ver} && "${tesseract_lang}" =~ eng ]]; then
         echo -e "\n${low_contrast_color}Attempting automated recognition of virtual machine graphical user interface.${default_color}"
         animated_please_wait 30
         for i in $(seq 1 60); do  # try automatic ocr for about 5 minutes
             VBoxManage controlvm "${vm_name}" screenshotpng "${vm_name}_screenshot.png" 2>&1 1>/dev/null
             ocr="$(tesseract "${vm_name}_screenshot.png" - --psm 11 --dpi 72 -l eng 2>/dev/null)"
-            regex='Language|English|Fran.ais'  # for zsh quoted regex compatibility
-            if [[ "${ocr}" =~ ${regex} ]]; then
+            regex_lang='Language|English|Fran.ais'  # for zsh quoted regex compatibility
+            regex_term='Terminal.Shell|Terminal.*sh.?-'  # for zsh quoted regex compatibility
+            if [[ "${ocr}" =~ ${regex_lang} ]]; then
                 animated_please_wait 20
                 send_enter
-            fi
-            if [[ "${ocr}" =~ Utilities ]]; then
+                animated_please_wait 20
+            elif [[ "${ocr}" =~ Utilities ]]; then
                 animated_please_wait 20
                 kbspecial='CTRLprs F2 CTRLrls u ENTER t ENTER'  # start Terminal
                 send_special
-            fi
-            regex='Terminal.Shell|Terminal.*sh.?-'  # for zsh quoted regex compatibility
-            if [[ "${ocr}" =~ ${regex} ]]; then
+                animated_please_wait 20
+            elif [[ "${ocr}" =~ ${regex_term} ]]; then
                 sleep 2
                 return
             fi
@@ -1590,7 +1675,7 @@ function would_you_like_to_know_less() {
 function prompt_delete_y_n() {
     # workaround for zsh-bash differences in read
     delete=""
-    if [[ -t 1 ]]; then  # terminal is interactive
+    if [[ $- =~ i ]]; then  # terminal is interactive
         if [[ -n "${ZSH_VERSION}" ]]; then
             read -s -q delete\?' [y/N] '
             delete="${delete:l}"
@@ -1604,8 +1689,7 @@ function prompt_delete_y_n() {
 
 # command-line argument processing
 check_shell
-stages='
-    check_shell
+stages=(
     check_gnu_coreutils_prefix
     set_variables
     welcome
@@ -1623,26 +1707,36 @@ stages='
     create_target_virtual_disk
     populate_macos_target_disk
     prompt_delete_temporary_files
-'
-[[ -z "${1}" ]] && for stage in ${stages}; do ${stage}; done && exit
-[[ "${1}" = "documentation" ]] && documentation && exit
-valid_arguments=(${stages//$'[\r\n]'/ } troubleshoot documentation)
-for specified_arg in "$@"; do
-    there_is_a_match=""
-    # doing matching the long way to prevent delimiter confusion
-    for valid_arg in "${valid_arguments[@]}"; do
-        [[ "${valid_arg}" = "${specified_arg}" ]] && there_is_a_match="true" && break
-    done
-    if [[ -z "${there_is_a_match}" ]]; then
-        echo -e "\nOne or more specified arguments is not recognized."
-        echo -e "\nRecognized stages:\n${stages}"
-        echo -e "Other recognized arguments:\n\n    documentation\n    troubleshoot"
-        echo -e "\nView documentation by entering the following command:"
-        would_you_like_to_know_less
-        exit
-    fi
-done
+)
+
+other_commands=(
+    check_shell
+    troubleshoot
+    documentation
+    and_all_subsequent_stages
+)
+
+# script called without arguments
+[[ $# -eq 0 ]] && for stage in "${stages[@]}"; do ${stage}; done && exit
+
+# first argument is "documentation"
+[[ "${1}" == "documentation" ]] && documentation && exit
+
+specified_arguments=("$@")  # this variable is used in the function "and_all_subsequent_stages"
+sorted_unique_recognized_arguments="$( printf "%s\n" ${stages[@]} ${other_commands[@]} | sort -bu )"
+sorted_unique_recognized_and_specified_arguments="$( printf "%s\n" ${stages[@]} ${other_commands[@]} $@ | sort -bu )"
+# if a specified argument is different from any recognized argument
+if [[ "${sorted_unique_recognized_and_specified_arguments}" != "${sorted_unique_recognized_arguments}" ]]; then
+    echo -e "\nOne or more specified arguments is not recognized."
+    echo -e "\nRecognized stages:\n"
+    printf '    %s\n' "${stages[@]}"
+    echo -e "\nOther recognized arguments:\n"
+    printf '    %s\n' "${other_commands[@]}"
+    echo -e "\nView documentation by entering the following command:"
+    would_you_like_to_know_less
+    exit
+fi
 check_gnu_coreutils_prefix
 set_variables
 check_dependencies
-for argument in "$@"; do ${argument}; done
+for argument; do ${argument}; done
